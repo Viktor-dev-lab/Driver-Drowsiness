@@ -4,38 +4,47 @@ import os
 import time
 from dotenv import load_dotenv
 
-# Đảm bảo đường dẫn import hoạt động không cần __init__.py
+# Đảm bảo import
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-# Import Giai đoạn 1 & 2
+# Import GĐ 1 & 2
 from src.preprocessing.camera_stream import CameraStream
 from src.preprocessing.image_enhancement import apply_clahe
 from src.detection.rf_detr import RFDETRDetector
 from src.detection.tracker import FaceTracker
 
-# Import Giai đoạn 3
+# Import GĐ 3
 from src.features.face_mesh import FaceMeshDetector
 from src.features.geometry_calc import calculate_ear, calculate_mar, get_head_pose, LEFT_EYE, RIGHT_EYE, MOUTH
 from src.features.patch_extractor import extract_eye_patch
 
-# Tải biến môi trường từ file .env
+# Import GĐ 4
+from src.classification.vit_classifier import ViTEyeClassifier
+
+# Import GĐ 5 (MỚI)
+from src.fusion.sliding_window import SlidingWindow
+from src.fusion.lstm_voter import SpatiotemporalVoter
+
 load_dotenv()
 API_KEY = os.getenv("ROBOFLOW_API_KEY")
 MODEL_ID = os.getenv("ROBOFLOW_MODEL_ID")
 
-# Cấu hình tối ưu hệ thống
-SKIP_FRAMES = 5  # Cứ 5 frame chạy AI (RF-DETR) 1 lần
+SKIP_FRAMES = 5
 
 def main():
-    # 1. Khởi tạo các module (Models & Trackers)
     cam = CameraStream(src=0)
     detector = RFDETRDetector(model_id=MODEL_ID, api_key=API_KEY)
     tracker = FaceTracker()
     face_mesh = FaceMeshDetector(max_faces=1)
+    vit_model = ViTEyeClassifier() 
+    
+    # Khởi tạo Cửa sổ trượt và Bộ ra quyết định (Phase 5)
+    window = SlidingWindow(window_size=60)
+    voter = SpatiotemporalVoter(fps=30)
 
-    print("[INFO] Starting Full Pipeline (Phase 1-3)... Press 'q' to exit.")
+    print("[INFO] Starting Full System (Phase 1-5)... Press 'q' to exit.")
 
     frame_counter = 0
     start_time = time.time()
@@ -43,71 +52,71 @@ def main():
 
     while True:
         ret, frame = cam.read()
-        if not ret:
-            print("[WARNING] Dropped frame or end of stream.")
-            break
+        if not ret: break
 
-        # ==========================================
-        # GIAI ĐOẠN 1: TIỀN XỬ LÝ
-        # ==========================================
         processed_frame = apply_clahe(frame)
         display_frame = processed_frame.copy()
 
-        # ==========================================
-        # GIAI ĐOẠN 2: DETECT & TRACKING (Khung mặt)
-        # ==========================================
+        # PHASE 2: Detection
         if frame_counter % SKIP_FRAMES == 0:
             raw_coords = detector.detect(processed_frame)
             tracked_coords = tracker.update(raw_coords)
-            box_color = (0, 255, 0) # Xanh lá (AI RF-DETR chạy)
+            box_color = (0, 255, 0)
         else:
             tracked_coords = tracker.update(None)
-            box_color = (0, 255, 255) # Vàng (Kalman Filter dự đoán)
+            box_color = (0, 255, 255)
 
-        # ==========================================
-        # GIAI ĐOẠN 3: ĐẶC TRƯNG 3D & CẮT MẮT
-        # ==========================================
         if tracked_coords:
-            # 3.1 Vẽ Bounding Box chứa mặt
             x, y, w, h = tracked_coords
             start_point = (int(x - w/2), int(y - h/2))
             end_point = (int(x + w/2), int(y + h/2))
             cv2.rectangle(display_frame, start_point, end_point, box_color, 2)
 
-            # 3.2 Gọi MediaPipe trích xuất 468 điểm 3D
-            # Chú ý: MediaPipe cần ảnh RGB
             rgb_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
             landmarks = face_mesh.get_landmarks(rgb_frame)
 
             if landmarks:
                 h_img, w_img, _ = processed_frame.shape
 
-                # 3.3 Tính toán các chỉ số toán học
+                # PHASE 3: Features
                 left_ear = calculate_ear(LEFT_EYE, landmarks, w_img, h_img)
                 right_ear = calculate_ear(RIGHT_EYE, landmarks, w_img, h_img)
                 avg_ear = (left_ear + right_ear) / 2.0
                 mar = calculate_mar(MOUTH, landmarks, w_img, h_img)
                 pitch, yaw, roll = get_head_pose(landmarks, w_img, h_img)
 
-                # 3.4 Cắt Eye Patch (Chuẩn bị cho GĐ 4)
                 left_eye_patch = extract_eye_patch(processed_frame, landmarks, LEFT_EYE)
                 right_eye_patch = extract_eye_patch(processed_frame, landmarks, RIGHT_EYE)
 
-                # Hiển thị số liệu lên màn hình
-                cv2.putText(display_frame, f"EAR: {avg_ear:.2f}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                cv2.putText(display_frame, f"MAR: {mar:.2f}", (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                cv2.putText(display_frame, f"Pitch: {pitch:.1f}  Yaw: {yaw:.1f}", (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                # PHASE 4: ViT Spatial State (Khoảnh khắc)
+                left_state = vit_model.predict(left_eye_patch)[0] if left_eye_patch is not None else -1
+                right_state = vit_model.predict(right_eye_patch)[0] if right_eye_patch is not None else -1
+                
+                # 1: Nhắm, 0: Mở. Chỉ ghi nhận "Nhắm" nếu cả 2 mắt cùng nhắm
+                current_vit_state = 1 if (left_state == 1 and right_state == 1) else 0
 
-                # (Tuỳ chọn) Bạn có thể imshow thêm left_eye_patch ra một cửa sổ nhỏ để kiểm tra xem cắt chuẩn chưa
-                if left_eye_patch is not None:
-                    cv2.imshow("Left Eye Crop (64x64)", left_eye_patch)
+                # PHASE 5: Spatiotemporal Fusion (Thời gian)
+                # Nạp vector vào hàng đợi
+                window.add_data(avg_ear, mar, pitch, current_vit_state)
+                
+                # Rút dữ liệu từ cửa sổ trượt ra đánh giá
+                window_data = window.get_window()
+                driver_status, status_color = voter.evaluate(window_data)
+                
+                # Hiển thị kết quả Cảnh báo cuối cùng
+                cv2.putText(display_frame, f"STATUS: {driver_status}", (20, 40), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
+
+                # Hiển thị số liệu nhỏ giọt để debug
+                cv2.putText(display_frame, f"EAR: {avg_ear:.2f} | Pitch: {pitch:.1f}", (20, 80), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                cv2.putText(display_frame, f"Queue: {len(window_data)}/60 frames", (20, 110), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
         else:
             cv2.putText(display_frame, "WARNING: Track Lost!", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-        # ==========================================
-        # FPS COUNTER
-        # ==========================================
+        # Đếm FPS
         frame_counter += 1
         elapsed_time = time.time() - start_time
         if elapsed_time >= 1.0:
@@ -115,11 +124,9 @@ def main():
             frame_counter = 0
             start_time = time.time()
 
-        cv2.putText(display_frame, f"FPS: {int(fps)}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+        cv2.putText(display_frame, f"FPS: {int(fps)}", (w_img - 120, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
 
-        # Hiển thị luồng chính
-        cv2.imshow("Drosiness Driver - Phase 1 to 3", display_frame)
-        
+        cv2.imshow("Drosiness Driver - Phase 1 to 5", display_frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
