@@ -30,11 +30,11 @@ from src.fusion.lstm_voter import SpatiotemporalVoter
 load_dotenv()
 API_KEY = os.getenv("ROBOFLOW_API_KEY")
 MODEL_ID = os.getenv("ROBOFLOW_MODEL_ID")
-
+IP_CAMERA_URL = "http://admin:123@192.168.2.51:8081/video"
 SKIP_FRAMES = 5
 
 def main():
-    cam = CameraStream(src=0)
+    cam = CameraStream(src=IP_CAMERA_URL)
     detector = RFDETRDetector(model_id=MODEL_ID, api_key=API_KEY)
     tracker = FaceTracker()
     face_mesh = FaceMeshDetector(max_faces=1)
@@ -42,7 +42,7 @@ def main():
     
     # Khởi tạo Cửa sổ trượt và Bộ ra quyết định (Phase 5)
     window = SlidingWindow(window_size=60)
-    voter = SpatiotemporalVoter(fps=30)
+    voter = SpatiotemporalVoter(fps=5)
 
     print("[INFO] Starting Full System (Phase 1-5)... Press 'q' to exit.")
 
@@ -95,9 +95,30 @@ def main():
                 # 1: Nhắm, 0: Mở. Chỉ ghi nhận "Nhắm" nếu cả 2 mắt cùng nhắm
                 current_vit_state = 1 if (left_state == 1 and right_state == 1) else 0
 
+                if left_eye_patch is not None:
+                    # Phóng to ảnh mắt lên một chút (từ 64x64 lên 128x128) để dễ nhìn hơn
+                    left_display = cv2.resize(left_eye_patch, (128, 128))
+                    
+                    # In trạng thái ViT lên cửa sổ mắt trái
+                    txt = "CLOSED" if left_state == 1 else "OPEN"
+                    color = (0, 0, 255) if left_state == 1 else (0, 255, 0)
+                    cv2.putText(left_display, txt, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    
+                    cv2.imshow("Left Eye Crop", left_display)
+                    
+                if right_eye_patch is not None:
+                    right_display = cv2.resize(right_eye_patch, (128, 128))
+                    
+                    # In trạng thái ViT lên cửa sổ mắt phải
+                    txt = "CLOSED" if right_state == 1 else "OPEN"
+                    color = (0, 0, 255) if right_state == 1 else (0, 255, 0)
+                    cv2.putText(right_display, txt, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    
+                    cv2.imshow("Right Eye Crop", right_display)
+                    
                 # PHASE 5: Spatiotemporal Fusion (Thời gian)
                 # Nạp vector vào hàng đợi
-                window.add_data(avg_ear, mar, pitch, current_vit_state)
+                window.add_data(avg_ear, mar, pitch, yaw, current_vit_state)
                 
                 # Rút dữ liệu từ cửa sổ trượt ra đánh giá
                 window_data = window.get_window()

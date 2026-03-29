@@ -3,86 +3,109 @@ import torch.nn as nn
 import numpy as np
 
 # ==========================================
-# 1. KIẾN TRÚC MẠNG CHUỖI THỜI GIAN LSTM
+# KIẾN TRÚC MẠNG LSTM
 # ==========================================
 class DrowsinessLSTM(nn.Module):
-    def __init__(self, input_size=4, hidden_size=64, num_layers=2, num_classes=2):
+    # Đã nâng input_size lên 5 (EAR, MAR, Pitch, Yaw, ViT)
+    def __init__(self, input_size=5, hidden_size=64, num_layers=2, num_classes=2):
         super(DrowsinessLSTM, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        # Mạng LSTM nhận đầu vào: (Batch, Sequence_length, Features)
+        # Mạng nhận đầu vào chuỗi thời gian (Batch, Sequence, Features)
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        # Lớp Linear cuối cùng phân loại 0 (Awake) hoặc 1 (Drowsy)
         self.fc = nn.Linear(hidden_size, num_classes)
 
     def forward(self, x):
         out, _ = self.lstm(x)
-        # Chỉ lấy output của timestep cuối cùng (frame thứ 60) để dự đoán
-        out = self.fc(out[:, -1, :])
+        out = self.fc(out[:, -1, :]) # Chỉ lấy quyết định ở bước thời gian cuối cùng
         return out
 
 # ==========================================
-# 2. BỘ ĐIỀU PHỐI: SOFT VOTING KẾT HỢP LSTM
+# BỘ XỬ LÝ LOGIC (SOFT VOTING + LSTM)
 # ==========================================
 class SpatiotemporalVoter:
-    def __init__(self, lstm_weights_path=None, fps=30, window_size=60):
+    def __init__(self, lstm_weights_path=None, fps=15, window_size=60):
+        # Lưu ý: Điều chỉnh fps ở đây (hoặc truyền vào từ main) cho sát với số FPS thực tế trên góc màn hình
         self.fps = fps
         self.window_size = window_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # --- Thiết lập Ngưỡng Thời gian (Lọc Nhiễu) ---
-        self.pitch_threshold = 25.0
-        self.microsleep_frames = int(1.5 * fps)  # ~45 frames (1.5s nhắm mắt)
-        self.look_down_frames = int(0.5 * fps)   # ~15 frames (0.5s nhìn vô lăng)
+        # --- Định nghĩa các ngưỡng (Thresholds) ---
+        # 1. Ngưỡng cho Microsleep (Nhắm mắt)
+        self.microsleep_frames = int(1.5 * fps)  # VD: FPS=15 -> 22 frames (duy trì 1.5 giây)
+        
+        # 2. Ngưỡng cho Ngủ gật (Gật gù)
+        self.pitch_threshold = 20.0              # Hạ ngưỡng cúi đầu xuống 20 độ cho nhạy
+        self.look_down_frames = int(0.5 * fps)   # Lọc nhiễu nhìn vô lăng (0.5 giây)
+        
+        # 3. Ngưỡng cho Mệt mỏi (Ngáp)
+        self.mar_threshold = 0.40                # Độ há miệng
+        self.yawn_frames = int(1.5 * fps)        # Ngáp thường kéo dài ít nhất 1.5 giây
 
-        # --- Khởi tạo LSTM ---
+        # Khởi tạo LSTM
         self.lstm_model = DrowsinessLSTM().to(self.device)
         self.use_lstm = False
         
+        # Nếu có file weights LSTM thì nạp vào, nếu không thì dùng Soft Voting
         if lstm_weights_path:
             try:
                 self.lstm_model.load_state_dict(torch.load(lstm_weights_path, map_location=self.device))
                 self.lstm_model.eval()
                 self.use_lstm = True
-                print("[INFO] LSTM model loaded successfully.")
             except Exception as e:
-                print(f"[WARNING] Could not load LSTM. Using Soft Voting fallback: {e}")
+                pass 
 
     def evaluate(self, window_data):
-        """
-        Nhận vào mảng dữ liệu cửa sổ trượt và đưa ra phán quyết cuối cùng.
-        """
-        # Cần thu thập đủ ít nhất 1 giây dữ liệu mới bắt đầu phán xét
+        # Chưa gom đủ dữ liệu tối thiểu (1 giây) thì báo trạng thái chờ
         if len(window_data) < self.fps:
             return "AWAKE (Gathering Data...)", (0, 255, 0)
 
-        # Trích xuất các cột dữ liệu
-        vit_states = window_data[:, 3] # Cột ViT (0: Mở, 1: Nhắm)
-        pitches = window_data[:, 2]    # Cột Góc cúi đầu
+        # Bóc tách Vector thành các mảng độc lập
+        ears = window_data[:, 0]
+        mars = window_data[:, 1]
+        pitches = window_data[:, 2]
+        yaws = window_data[:, 3]     # Thêm Yaw để dự phòng cho bài toán Ngủ trắng sau này
+        vit_states = window_data[:, 4] # ViT lùi xuống vị trí cuối cùng
 
         # --------------------------------------------------
-        # LUẬT A: NHẮM MẮT (Lọc nháy mắt)
+        # KỊCH BẢN 1: PHÁT HIỆN NHẮM MẮT (MICROSLEEP)
         # --------------------------------------------------
+        # Nhìn vào chuỗi ViT trong 1.5 giây qua
         recent_vit = vit_states[-self.microsleep_frames:]
         is_eyes_closed = False
+        
         if len(recent_vit) >= self.microsleep_frames:
-            # Nếu trong 1.5s qua, > 80% số khung hình là mắt nhắm -> Đích thị là ngủ
+            # Nếu 80% thời gian trong 1.5s qua là nhắm mắt -> Báo động
             if np.sum(recent_vit == 1) >= (self.microsleep_frames * 0.80):
                 is_eyes_closed = True
 
         # --------------------------------------------------
-        # LUẬT B: GẬT GÙ / NGỦ TRẮNG (Lọc hành vi nhìn vô lăng)
+        # KỊCH BẢN 2: PHÁT HIỆN GẬT GÙ (NGỦ TRẮNG) & LỌC NHIỄU
         # --------------------------------------------------
-        recent_pitches = pitches[-self.fps:] # Xét trong 1s gần nhất
+        # Nhìn vào chuỗi Pitch trong 1 giây gần nhất
+        recent_pitches = pitches[-self.fps:] 
         is_nodding_off = False
+        
         if len(recent_pitches) == self.fps:
+            # Đếm số khung hình bị gập cổ quá ngưỡng
             pitch_down_count = np.sum(recent_pitches > self.pitch_threshold)
-            # Chỉ báo động nếu cúi đầu vượt quá 0.5 giây. Nếu < 0.5s thì coi là đang liếc nhìn màn hình xe.
+            
+            # LỌC NHIỄU: Nếu cúi đầu vượt quá 0.5s, xác nhận là gật gù vô hồn
             if pitch_down_count > self.look_down_frames:
                 is_nodding_off = True
 
         # --------------------------------------------------
-        # LSTM INFERENCE (Nếu có weights)
+        # KỊCH BẢN 3: PHÁT HIỆN NGÁP (YAWNING)
+        # --------------------------------------------------
+        # Nhìn vào chuỗi MAR trong 2 giây qua
+        recent_mars = mars[-self.yawn_frames:]
+        is_yawning = False
+        
+        if len(recent_mars) == self.yawn_frames:
+            # Nếu miệng há to (MAR > threshold) trong hơn 50% thời gian của 2 giây đó
+            if np.sum(recent_mars > self.mar_threshold) > (self.yawn_frames * 0.5):
+                is_yawning = True
+
+        # --------------------------------------------------
+        # KỊCH BẢN 4: DỰ ĐOÁN TỪ LSTM (Hiện tại đang tắt)
         # --------------------------------------------------
         lstm_prediction = 0
         if self.use_lstm and len(window_data) == self.window_size:
@@ -93,13 +116,15 @@ class SpatiotemporalVoter:
                 lstm_prediction = predicted.item()
 
         # ==========================================
-        # CHỐT TRẠNG THÁI & MÀU SẮC (Soft Voting)
+        # CHỐT TRẠNG THÁI CUỐI CÙNG
         # ==========================================
         if is_eyes_closed:
-            return "DANGER: MICRO-SLEEP!", (0, 0, 255) # ĐỎ (Ngủ gật)
+            return "DANGER: MICRO-SLEEP!", (0, 0, 255)         # ĐỎ
         elif is_nodding_off:
-            return "WARNING: NODDING OFF!", (0, 165, 255) # CAM (Ngủ trắng)
+            return "WARNING: NODDING OFF!", (0, 165, 255)      # CAM
+        elif is_yawning:
+            return "CAUTION: YAWNING (FATIGUE)", (0, 255, 255) # VÀNG
         elif lstm_prediction == 1:
-            return "WARNING: DROWSY PATTERN", (0, 0, 255) # AI phát hiện quy luật mệt mỏi
+            return "WARNING: DROWSY PATTERN", (0, 0, 255) 
         
-        return "DRIVER AWAKE", (0, 255, 0) # XANH LÁ
+        return "DRIVER AWAKE", (0, 255, 0)                     # XANH LÁ

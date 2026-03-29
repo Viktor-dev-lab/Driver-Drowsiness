@@ -3,11 +3,11 @@ import numpy as np
 
 def extract_eye_patch(image, landmarks, eye_indices, size=(64, 64), padding=10):
     """
-    Cắt vùng ảnh chứa con mắt dựa trên tọa độ landmarks.
+    Cắt vùng ảnh chứa con mắt dựa trên mảng chỉ số (indices) của MediaPipe.
     """
     h_img, w_img, _ = image.shape
     
-    # Lấy tọa độ x, y của tất cả các điểm quanh mắt
+    # FIX LỖI Ở ĐÂY: Bỏ chữ .landmark đi, chỉ dùng landmarks[i]
     x_coords = [int(landmarks[i].x * w_img) for i in eye_indices]
     y_coords = [int(landmarks[i].y * h_img) for i in eye_indices]
     
@@ -24,8 +24,9 @@ def extract_eye_patch(image, landmarks, eye_indices, size=(64, 64), padding=10):
     # Cắt ảnh
     eye_crop = image[y_min:y_max, x_min:x_max]
     
-    # Chuẩn hóa về đúng 64x64 nếu cắt thành công
-    if eye_crop.size != 0:
+    # Kiểm tra an toàn: Nếu vùng cắt ra không bị lỗi/rỗng
+    if eye_crop.size != 0 and eye_crop.shape[0] > 0 and eye_crop.shape[1] > 0:
         eye_crop_resized = cv2.resize(eye_crop, size)
         return eye_crop_resized
+        
     return None

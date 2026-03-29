@@ -1,5 +1,7 @@
 # Cách import an toàn cho mediapipe 0.10.x
-import mediapipe.python.solutions.face_mesh as mp_face_mesh
+import mediapipe as mp
+
+mp_face_mesh = mp.solutions.face_mesh
 
 class FaceMeshDetector:
     def __init__(self, max_faces=1):
