@@ -95,9 +95,9 @@ def main():
     # ==========================================
     # CHỈ LẤY 50 VIDEO MỖI LOẠI ĐỂ TEST
     # ==========================================
-    LIMIT = 50
-    drowsy_videos = drowsy_videos[:LIMIT]
-    awake_videos = awake_videos[:LIMIT]
+    # LIMIT = 50
+    # drowsy_videos = drowsy_videos[:LIMIT]
+    # awake_videos = awake_videos[:LIMIT]
     
     print(f"[INFO] Đã cắt dữ liệu: Lấy {len(drowsy_videos)} video Ngủ gật và {len(awake_videos)} video Tỉnh táo.")
 

@@ -56,6 +56,7 @@ def main():
 
         processed_frame = apply_clahe(frame)
         display_frame = processed_frame.copy()
+        h_img, w_img, _ = processed_frame.shape
 
         # PHASE 2: Detection
         if frame_counter % SKIP_FRAMES == 0:
@@ -76,8 +77,6 @@ def main():
             landmarks = face_mesh.get_landmarks(rgb_frame)
 
             if landmarks:
-                h_img, w_img, _ = processed_frame.shape
-
                 # PHASE 3: Features
                 left_ear = calculate_ear(LEFT_EYE, landmarks, w_img, h_img)
                 right_ear = calculate_ear(RIGHT_EYE, landmarks, w_img, h_img)
