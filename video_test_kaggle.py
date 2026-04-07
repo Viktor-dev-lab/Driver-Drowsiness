@@ -152,24 +152,24 @@ def main():
     print("[INFO] Đang kiểm tra/tải Dataset SUST-DDD từ Kaggle...")
     dataset_path = kagglehub.dataset_download("esrakavalci/sust-ddd")
     
+    # Chỉ lấy video DROWSY
     drowsy_videos = glob.glob(os.path.join(dataset_path, '**', 'd_*.mp4'), recursive=True)
-    awake_videos = glob.glob(os.path.join(dataset_path, '**', 'n_*.mp4'), recursive=True)
 
-    if not drowsy_videos or not awake_videos:
-        print("[ERROR] Không tìm thấy đủ video trong Dataset. Vui lòng kiểm tra lại.")
+    if not drowsy_videos:
+        print("[ERROR] Không tìm thấy video buồn ngủ (d_*.mp4) trong Dataset. Vui lòng kiểm tra lại.")
         return
 
-    # BỐC MẪU NGẪU NHIÊN: Lấy 5 video ngủ và 5 video tỉnh
-    LIMIT = 5
+    # BỐC MẪU NGẪU NHIÊN: Lấy đúng 10 video ngủ gật
+    LIMIT = 15
     sampled_drowsy = random.sample(drowsy_videos, min(LIMIT, len(drowsy_videos)))
-    sampled_awake = random.sample(awake_videos, min(LIMIT, len(awake_videos)))
 
-    tasks = [(v, 1) for v in sampled_drowsy] + [(v, 0) for v in sampled_awake]
+    # Tạo danh sách tác vụ (tất cả đều có nhãn 1)
+    tasks = [(v, 1) for v in sampled_drowsy]
 
     # 2. Tạo thư mục chứa video đầu ra
     out_dir = os.path.join(current_dir, "output_videos")
     os.makedirs(out_dir, exist_ok=True)
-    print(f"[INFO] Bốc ngẫu nhiên {len(tasks)} video để test. Kết quả sẽ lưu tại: {out_dir}")
+    print(f"[INFO] Bốc ngẫu nhiên {len(tasks)} video buồn ngủ (DROWSY) để test. Kết quả sẽ lưu tại: {out_dir}")
 
     # 3. Khởi tạo Mô hình AI
     print("[INFO] Đang khởi tạo các mô hình AI (RF-DETR, FaceMesh, ViT)...")
@@ -184,7 +184,7 @@ def main():
     # 4. Chạy vòng lặp xử lý tất cả video
     print(f"\n[🚀] BẮT ĐẦU XỬ LÝ {len(tasks)} VIDEO...")
     for idx, (video_path, label) in enumerate(tasks):
-        print(f"\n[{idx+1}/{len(tasks)}] Video nhãn: {'DROWSY' if label == 1 else 'AWAKE'}")
+        print(f"\n[{idx+1}/{len(tasks)}] Video nhãn: DROWSY")
         process_single_video(video_path, label, out_dir, detector, face_mesh, vit_model, lstm_path)
 
     print("\n[🎉] HOÀN TẤT TOÀN BỘ QUÁ TRÌNH KIỂM TRA!")

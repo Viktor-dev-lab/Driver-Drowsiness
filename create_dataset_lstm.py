@@ -50,6 +50,9 @@ def process_single_video(args):
     
     frame_count = 0
     extracted_rows = []
+    
+    # Lấy tên file video để làm ID (VD: "d_001.mp4")
+    video_name = os.path.basename(video_path)
 
     while True:
         ret, frame = cap.read()
@@ -77,7 +80,8 @@ def process_single_video(args):
             right_state = vit_model.predict(right_patch)[0] if right_patch is not None else 0
             vit_state = 1 if (left_state == 1 and right_state == 1) else 0
 
-            extracted_rows.append([avg_ear, mar, round(pitch, 2), round(yaw, 2), vit_state, label])
+            # Thêm video_name vào đầu mỗi dòng
+            extracted_rows.append([video_name, avg_ear, mar, round(pitch, 2), round(yaw, 2), vit_state, label])
 
     cap.release()
     return video_path, extracted_rows
@@ -93,11 +97,11 @@ def main():
     awake_videos = glob.glob(os.path.join(dataset_path, '**', 'n_*.mp4'), recursive=True)
     
     # ==========================================
-    # CHỈ LẤY 50 VIDEO MỖI LOẠI ĐỂ TEST
+    # CHỈ LẤY 50 VIDEO MỖI LOẠI ĐỂ TEST (TỔNG 100 VIDEO)
     # ==========================================
-    # LIMIT = 50
-    # drowsy_videos = drowsy_videos[:LIMIT]
-    # awake_videos = awake_videos[:LIMIT]
+    LIMIT = 50
+    drowsy_videos = drowsy_videos[:LIMIT]
+    awake_videos = awake_videos[:LIMIT]
     
     print(f"[INFO] Đã cắt dữ liệu: Lấy {len(drowsy_videos)} video Ngủ gật và {len(awake_videos)} video Tỉnh táo.")
 
@@ -110,7 +114,7 @@ def main():
 
     with open(csv_path, mode='w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['ear', 'mar', 'pitch', 'yaw', 'vit_state', 'label'])
+        writer.writerow(['video_id', 'ear', 'mar', 'pitch', 'yaw', 'vit_state', 'label'])
         f.flush()
 
         completed_count = 0
